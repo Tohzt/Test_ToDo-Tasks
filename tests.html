@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Dark/Light Mode Tests</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, sans-serif; background: #f5f5f5; color: #222; padding: 2rem 1rem; }
+    h1 { font-size: 1.4rem; font-weight: 600; margin-bottom: 0.5rem; }
+    p.subtitle { color: #666; font-size: 0.9rem; margin-bottom: 1.5rem; }
+    .test { margin: 0.4rem 0; padding: 0.5rem 0.75rem; border-radius: 4px; font-size: 0.95rem; }
+    .pass { background: #d4edda; color: #155724; }
+    .fail { background: #f8d7da; color: #721c24; }
+    #summary { margin-top: 1.25rem; font-weight: 600; font-size: 1rem; }
+    #status { color: #888; font-size: 0.9rem; margin-bottom: 0.75rem; }
+  </style>
+</head>
+<body>
+  <h1>Dark/Light Mode Toggle — Test Suite</h1>
+  <p class="subtitle">Open this file in the same browser profile you use for index.html.</p>
+  <div id="status">Loading…</div>
+  <div id="results"></div>
+  <div id="summary"></div>
+  <iframe id="app-frame" src="index.html" style="width:0;height:0;border:0;position:absolute"></iframe>
+
+  <script>
+    const resultsEl = document.getElementById('results');
+    const summaryEl = document.getElementById('summary');
+    const statusEl  = document.getElementById('status');
+    const frame     = document.getElementById('app-frame');
+
+    let passed = 0;
+    let failed = 0;
+    let phase  = 0;
+
+    function report(name, ok, detail) {
+      const div = document.createElement('div');
+      div.className = 'test ' + (ok ? 'pass' : 'fail');
+      div.textContent = (ok ? '✓ ' : '✗ ') + name + (detail ? ' — ' + detail : '');
+      resultsEl.appendChild(div);
+      if (ok) passed++; else failed++;
+    }
+
+    function isDarkMode(doc) {
+      return doc.body.classList.contains('dark') ||
+             doc.documentElement.classList.contains('dark') ||
+             doc.documentElement.getAttribute('data-theme') === 'dark';
+    }
+
+    function findToggleBtn(doc) {
+      const byId = doc.getElementById('theme-toggle');
+      if (byId) return byId;
+      return [...doc.querySelectorAll('button')].find(b =>
+        /dark|light|theme|mode/i.test(b.textContent + (b.getAttribute('aria-label') || ''))
+      );
+    }
+
+    function delay(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    frame.onload = async function () {
+      phase++;
+      await delay(120);
+
+      const doc = frame.contentDocument;
+      const win = frame.contentWindow;
+
+      if (phase === 1) {
+        statusEl.textContent = 'Phase 1 of 2: initial load tests…';
+
+        // ── Test 1: toggle button present ──────────────────────────────
+        const btn = findToggleBtn(doc);
+        report('Toggle button is present in the page', !!btn,
+          btn ? `found: "${(btn.textContent.trim() || btn.getAttribute('aria-label') || 'no label')}"` : 'no button matched');
+
+        if (!btn) {
+          finalize();
+          return;
+        }
+
+        // ── Test 2: default state is light when no pref stored ─────────
+        win.localStorage.removeItem('theme');
+        report('Default state is light (no stored preference)', !isDarkMode(doc));
+
+        // ── Test 3: toggle activates dark mode ─────────────────────────
+        btn.click();
+        await delay(60);
+        report('Clicking toggle switches to dark mode', isDarkMode(doc));
+
+        // ── Test 4: localStorage is written after toggling dark ─────────
+        const storedAfterDark = win.localStorage.getItem('theme');
+        report('localStorage is updated after activating dark mode', storedAfterDark !== null,
+          storedAfterDark !== null ? `value: "${storedAfterDark}"` : 'localStorage.getItem("theme") returned null');
+
+        // ── Test 5: toggle switches back to light ──────────────────────
+        btn.click();
+        await delay(60);
+        report('Clicking toggle again returns to light mode', !isDarkMode(doc));
+
+        // ── Test 6: localStorage reflects light preference ─────────────
+        const storedAfterLight = win.localStorage.getItem('theme');
+        const lightStored = storedAfterLight !== 'dark';
+        report('localStorage no longer indicates dark after returning to light', lightStored,
+          `value: "${storedAfterLight}"`);
+
+        // ── Phase 2 setup: save dark pref and reload ───────────────────
+        win.localStorage.setItem('theme', 'dark');
+        frame.src = 'index.html';
+
+      } else if (phase === 2) {
+        statusEl.textContent = 'Phase 2 of 2: persistence tests…';
+
+        // ── Test 7: dark mode applied on load when pref is stored ───────
+        report('Dark mode is applied on load when localStorage pref is "dark"', isDarkMode(doc));
+
+        // ── Test 8: toggle button still present after reload ───────────
+        const btn = findToggleBtn(doc);
+        report('Toggle button is present after reload', !!btn);
+
+        // Cleanup: remove test pref so index.html loads clean next time
+        frame.contentWindow.localStorage.removeItem('theme');
+
+        finalize();
+      }
+    };
+
+    function finalize() {
+      const total = passed + failed;
+      statusEl.textContent = 'Done.';
+      summaryEl.textContent = `${total} tests: ${passed} passed, ${failed} failed`;
+      summaryEl.style.color = failed === 0 ? '#155724' : '#721c24';
+    }
+  </script>
+</body>
+</html>
