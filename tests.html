@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sort & Filter Tests — To-Do App</title>
+  <style>
+    body {
+      font-family: monospace;
+      background: #1a1a1a;
+      color: #e0e0e0;
+      padding: 1.5rem;
+      margin: 0;
+    }
+    h1 { font-size: 1.2rem; margin-bottom: 1.5rem; color: #fff; }
+    h2 { font-size: 0.95rem; color: #aaa; margin: 1.25rem 0 0.5rem; border-bottom: 1px solid #333; padding-bottom: 0.3rem; }
+    .pass { color: #6abf6a; }
+    .fail { color: #bf6a6a; }
+    .skip { color: #888; }
+    .result { margin: 0.2rem 0; font-size: 0.9rem; }
+    #summary {
+      margin-top: 1.5rem;
+      padding: 0.75rem;
+      border-radius: 4px;
+      font-size: 1rem;
+      font-weight: bold;
+    }
+    #summary.all-pass { background: #1e2e1e; border: 1px solid #3a5a3a; color: #6abf6a; }
+    #summary.has-fail  { background: #2e1e1e; border: 1px solid #5a3a3a; color: #bf6a6a; }
+    #app-container { display: none; }
+  </style>
+</head>
+<body>
+  <h1>Sort &amp; Filter Tests</h1>
+  <div id="output"></div>
+  <div id="summary"></div>
+
+  <!--
+    Hidden rendering container — we inject the minimal app DOM here so we can
+    call the real render() from index.html without a visible page.
+  -->
+  <div id="app-container">
+    <div id="app">
+      <div id="header">
+        <h1>To-Do List</h1>
+        <button id="theme-btn">🌙</button>
+      </div>
+      <div id="input-row">
+        <input id="task-input" type="text" placeholder="Add a task…" autocomplete="off">
+        <button id="add-btn">Add</button>
+      </div>
+      <div id="controls-row">
+        <!-- The coder adds sort/filter controls here. Tests reference them by
+             expected IDs: sort-select (or sort buttons) and filter-select (or
+             filter buttons). See CONTROL_IDS below to adjust if needed. -->
+      </div>
+      <ul id="task-list"></ul>
+      <div id="footer">
+        <span id="task-count"></span>
+        <button id="clear-btn" style="display:none">Clear completed</button>
+      </div>
+    </div>
+  </div>
+
+  <!--
+    Load the real app. Its <script> block runs immediately and binds to the DOM
+    elements above, so all app state (tasks, render, etc.) lives in its closure.
+    We can only reach it indirectly via DOM manipulation.
+  -->
+  <script>
+    // ─── helpers used by the app script to avoid real localStorage ──────────
+    // We shadow localStorage so saved tasks don't bleed between test runs.
+    const _store = {};
+    const _fakeStorage = {
+      getItem: k => (_store[k] !== undefined ? _store[k] : null),
+      setItem: (k, v) => { _store[k] = v; },
+      removeItem: k => { delete _store[k]; },
+    };
+    // Override before the app script reads localStorage.
+    Object.defineProperty(window, 'localStorage', { value: _fakeStorage, writable: false });
+  </script>
+
+  <!-- The app under test -->
+  <script src="index-script.js"></script>
+  <!--
+    NOTE: index.html keeps all JS inline, so this tests.html uses a small
+    workaround described at the bottom of this file. See the build note.
+  -->
+
+  <script>
+    // ═══════════════════════════════════════════════════════════════════════
+    //  TEST RUNNER
+    // ═══════════════════════════════════════════════════════════════════════
+    const output   = document.getElementById('output');
+    const summary  = document.getElementById('summary');
+    let passed = 0, failed = 0, skipped = 0;
+    let currentSection = null;
+
+    function section(name) {
+      currentSection = document.createElement('div');
+      const h2 = document.createElement('h2');
+      h2.textContent = name;
+      currentSection.appendChild(h2);
+      output.appendChild(currentSection);
+    }
+
+    function assert(condition, message) {
+      const div = document.createElement('div');
+      div.className = 'result ' + (condition ? 'pass' : 'fail');
+      div.textContent = (condition ? '✓ ' : '✗ ') + message;
+      (currentSection || output).appendChild(div);
+      if (condition) passed++; else failed++;
+      return condition;
+    }
+
+    function skip(message) {
+      const div = document.createElement('div');
+      div.className = 'result skip';
+      div.textContent = '– ' + message;
+      (currentSection || output).appendChild(div);
+      skipped++;
+    }
+
+    function showSummary() {
+      summary.textContent =
+        `${passed} passed, ${failed} failed, ${skipped} skipped`;
+      summary.className = failed === 0 ? 'all-pass' : 'has-fail';
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  CONTROL DISCOVERY
+    //  Adjust these IDs to match whatever the coder chose.
+    // ═══════════════════════════════════════════════════════════════════════
+    const CONTROL_IDS = {
+      sortSelect:   'sort-select',     // <select> or a container for sort buttons
+      filterSelect: 'filter-select',   // <select> or a container for filter buttons
+      sortAZ:   'sort-az',             // button id (used if buttons instead of select)
+      sortZA:   'sort-za',
+      filterAll:       'filter-all',
+      filterActive:    'filter-active',
+      filterCompleted: 'filter-completed',
+    };
+
+    // Returns the rendered task text values in DOM order.
+    function renderedTexts() {
+      return Array.from(
+        document.querySelectorAll('#task-list .task-text')
+      ).map(el => el.textContent.trim());
+    }
+
+    // Returns only the VISIBLE (not display:none) task text values.
+    function visibleTexts() {
+      return Array.from(
+        document.querySelectorAll('#task-list li')
+      )
+        .filter(li => li.style.display !== 'none')
+        .map(li => {
+          const span = li.querySelector('.task-text');
+          return span ? span.textContent.trim() : '';
+        });
+    }
+
+    function completedTexts() {
+      return Array.from(
+        document.querySelectorAll('#task-list .task-text.done')
+      ).map(el => el.textContent.trim());
+    }
+
+    // Trigger a <select> change or click a matching <button>.
+    function applySort(value) {
+      const sel = document.getElementById(CONTROL_IDS.sortSelect);
+      if (sel && sel.tagName === 'SELECT') {
+        sel.value = value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }
+      // Fallback: try dedicated button IDs
+      const btnId = value === 'az' ? CONTROL_IDS.sortAZ
+                  : value === 'za' ? CONTROL_IDS.sortZA
+                  : null;
+      if (btnId) {
+        const btn = document.getElementById(btnId);
+        if (btn) { btn.click(); return true; }
+      }
+      return false;
+    }
+
+    function applyFilter(value) {
+      const sel = document.getElementById(CONTROL_IDS.filterSelect);
+      if (sel && sel.tagName === 'SELECT') {
+        sel.value = value;
+        sel.dispatchEvent(new Event('change', { bubbles: true }));
+        return true;
+      }
+      const btnId = value === 'all'       ? CONTROL_IDS.filterAll
+                  : value === 'active'    ? CONTROL_IDS.filterActive
+                  : value === 'completed' ? CONTROL_IDS.filterCompleted
+                  : null;
+      if (btnId) {
+        const btn = document.getElementById(btnId);
+        if (btn) { btn.click(); return true; }
+      }
+      return false;
+    }
+
+    // Reset app to a known state: clear tasks, add the given list, reset controls.
+    function resetApp(taskList) {
+      // Clear via the clear-completed button if possible, else manipulate directly.
+      // We can't access the closure's `tasks` array, so we use the add/delete UI.
+
+      // Delete all current items.
+      let dels;
+      while ((dels = document.querySelectorAll('#task-list .delete-btn')).length) {
+        dels[0].click();
+      }
+
+      // Add tasks via the input.
+      const input = document.getElementById('task-input');
+      const addBtn = document.getElementById('add-btn');
+      for (const { text, done } of taskList) {
+        input.value = text;
+        addBtn.click();
+        if (done) {
+          // Mark the just-added task as done (it's the last item).
+          const spans = document.querySelectorAll('#task-list .task-text');
+          if (spans.length) spans[spans.length - 1].click();
+        }
+      }
+
+      // Reset sort/filter controls to defaults.
+      applySort('');       // empty string = default/none
+      applyFilter('all');
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    //  WAIT FOR DOM READY THEN RUN TESTS
+    // ═══════════════════════════════════════════════════════════════════════
+    function runAllTests() {
+      const SAMPLE = [
+        { text: 'Buy milk',       done: false },
+        { text: 'Alpha task',     done: true  },
+        { text: 'Zebra task',     done: false },
+        { text: 'Middle item',    done: true  },
+        { text: 'Another active', done: false },
+      ];
+
+      // ── Controls exist ────────────────────────────────────────────────────
+      section('Sort/filter controls are present');
+
+      const hasSortControl =
+        !!document.getElementById(CONTROL_IDS.sortSelect) ||
+        !!document.getElementById(CONTROL_IDS.sortAZ);
+      assert(hasSortControl, 'Sort control is present in the DOM');
+
+      const hasFilterControl =
+        !!document.getElementById(CONTROL_IDS.filterSelect) ||
+        !!document.getElementById(CONTROL_IDS.filterAll);
+      assert(hasFilterControl, 'Filter control is present in the DOM');
+
+      if (!hasSortControl || !hasFilterControl) {
+        skip('Remaining tests skipped — controls not found. Check CONTROL_IDS.');
+        showSummary();
+        return;
+      }
+
+      // ── Sort A→Z ──────────────────────────────────────────────────────────
+      section('Sort A→Z');
+      resetApp(SAMPLE);
+      const sortedOK = applySort('az');
+      assert(sortedOK, 'applySort("az") found a control');
+
+      const azTexts = renderedTexts();
+      const expectedAZ = [...SAMPLE].map(t => t.text).sort((a, b) => a.localeCompare(b));
+      assert(
+        JSON.stringify(azTexts) === JSON.stringify(expectedAZ),
+        `Tasks rendered in A→Z order: [${azTexts.join(', ')}]`
+      );
+      // First and last chars
+      assert(
+        azTexts.length > 1 && azTexts[0] <= azTexts[azTexts.length - 1],
+        'First task text is ≤ last task text (lexicographic)'
+      );
+
+      // ── Sort Z→A ──────────────────────────────────────────────────────────
+      section('Sort Z→A');
+      resetApp(SAMPLE);
+      const sortedZA = applySort('za');
+      assert(sortedZA, 'applySort("za") found a control');
+
+      const zaTexts = renderedTexts();
+      const expectedZA = [...SAMPLE].map(t => t.text).sort((a, b) => b.localeCompare(a));
+      assert(
+        JSON.stringify(zaTexts) === JSON.stringify(expectedZA),
+        `Tasks rendered in Z→A order: [${zaTexts.join(', ')}]`
+      );
+      assert(
+        zaTexts.length > 1 && zaTexts[0] >= zaTexts[zaTexts.length - 1],
+        'First task text is ≥ last task text (lexicographic)'
+      );
+
+      // ── Default sort restores original order ──────────────────────────────
+      section('Default sort (no sort)');
+      resetApp(SAMPLE);
+      applySort('az');
+      applySort('');  // reset to default
+      const defaultTexts = renderedTexts();
+      const originalOrder = SAMPLE.map(t => t.text);
+      assert(
+        JSON.stringify(defaultTexts) === JSON.stringify(originalOrder),
+        'Resetting sort to default restores original insertion order'
+      );
+
+      // ── Filter: completed ─────────────────────────────────────────────────
+      section('Filter: completed only');
+      resetApp(SAMPLE);
+      applyFilter('completed');
+
+      const completedVisible = visibleTexts();
+      const expectedCompleted = SAMPLE.filter(t => t.done).map(t => t.text);
+      assert(
+        completedVisible.length === expectedCompleted.length,
+        `Only ${expectedCompleted.length} completed task(s) visible (got ${completedVisible.length})`
+      );
+      for (const text of expectedCompleted) {
+        assert(completedVisible.includes(text), `Completed task "${text}" is visible`);
+      }
+      const activeInView = SAMPLE.filter(t => !t.done).map(t => t.text);
+      for (const text of activeInView) {
+        assert(!completedVisible.includes(text), `Active task "${text}" is hidden`);
+      }
+
+      // ── Filter: active (not completed) ────────────────────────────────────
+      section('Filter: active (not completed) only');
+      resetApp(SAMPLE);
+      applyFilter('active');
+
+      const activeVisible = visibleTexts();
+      const expectedActive = SAMPLE.filter(t => !t.done).map(t => t.text);
+      assert(
+        activeVisible.length === expectedActive.length,
+        `Only ${expectedActive.length} active task(s) visible (got ${activeVisible.length})`
+      );
+      for (const text of expectedActive) {
+        assert(activeVisible.includes(text), `Active task "${text}" is visible`);
+      }
+      const completedItems = SAMPLE.filter(t => t.done).map(t => t.text);
+      for (const text of completedItems) {
+        assert(!activeVisible.includes(text), `Completed task "${text}" is hidden`);
+      }
+
+      // ── Filter: all ───────────────────────────────────────────────────────
+      section('Filter: all (show everything)');
+      resetApp(SAMPLE);
+      applyFilter('active');     // first filter to something
+      applyFilter('all');        // then reset
+
+      const allVisible = visibleTexts();
+      assert(
+        allVisible.length === SAMPLE.length,
+        `All ${SAMPLE.length} tasks visible after switching to "all" (got ${allVisible.length})`
+      );
+
+      // ── Combined: sort A→Z + filter active ───────────────────────────────
+      section('Combined: Sort A→Z + filter active');
+      resetApp(SAMPLE);
+      applySort('az');
+      applyFilter('active');
+
+      const combinedTexts = visibleTexts();
+      const expectedCombined = SAMPLE
+        .filter(t => !t.done)
+        .map(t => t.text)
+        .sort((a, b) => a.localeCompare(b));
+
+      assert(
+        combinedTexts.length === expectedCombined.length,
+        `${expectedCombined.length} active task(s) visible (got ${combinedTexts.length})`
+      );
+      assert(
+        JSON.stringify(combinedTexts) === JSON.stringify(expectedCombined),
+        `Active tasks in A→Z order: [${combinedTexts.join(', ')}]`
+      );
+
+      // ── Combined: sort Z→A + filter completed ────────────────────────────
+      section('Combined: Sort Z→A + filter completed');
+      resetApp(SAMPLE);
+      applySort('za');
+      applyFilter('completed');
+
+      const c2 = visibleTexts();
+      const exp2 = SAMPLE
+        .filter(t => t.done)
+        .map(t => t.text)
+        .sort((a, b) => b.localeCompare(a));
+
+      assert(
+        c2.length === exp2.length,
+        `${exp2.length} completed task(s) visible (got ${c2.length})`
+      );
+      assert(
+        JSON.stringify(c2) === JSON.stringify(exp2),
+        `Completed tasks in Z→A order: [${c2.join(', ')}]`
+      );
+
+      // ── Edge: empty list with filter ─────────────────────────────────────
+      section('Edge cases');
+
+      // Start fresh, filter completed on empty list
+      resetApp([]);
+      applyFilter('completed');
+      assert(
+        visibleTexts().length === 0,
+        'Filter "completed" on empty list shows nothing'
+      );
+
+      // Single task, active, filter completed → hidden
+      resetApp([{ text: 'Only task', done: false }]);
+      applyFilter('completed');
+      assert(
+        visibleTexts().length === 0,
+        'Active-only list: filter "completed" hides all items'
+      );
+
+      // Single task, done, filter active → hidden
+      resetApp([{ text: 'Done task', done: true }]);
+      applyFilter('active');
+      assert(
+        visibleTexts().length === 0,
+        'Completed-only list: filter "active" hides all items'
+      );
+
+      // Sort with single task should not crash
+      resetApp([{ text: 'Solo', done: false }]);
+      applySort('az');
+      assert(renderedTexts().length === 1, 'Sort A→Z with one task renders that task');
+      applySort('za');
+      assert(renderedTexts().length === 1, 'Sort Z→A with one task renders that task');
+
+      // Sorting is case-insensitive (optional — skip if not required)
+      resetApp([
+        { text: 'banana', done: false },
+        { text: 'Apple',  done: false },
+        { text: 'cherry', done: false },
+      ]);
+      applySort('az');
+      const caseTexts = renderedTexts();
+      const isSortedCaseInsensitive =
+        caseTexts[0].toLowerCase() <= caseTexts[1].toLowerCase() &&
+        caseTexts[1].toLowerCase() <= caseTexts[2].toLowerCase();
+      assert(isSortedCaseInsensitive, 'A→Z sort is case-insensitive (Apple before banana)');
+
+      // ── Persistence: sort/filter survive re-render ────────────────────────
+      section('Sort/filter state persists across task add/delete');
+
+      resetApp(SAMPLE);
+      applySort('az');
+      applyFilter('active');
+
+      // Add a new task while filter is active
+      const input = document.getElementById('task-input');
+      const addBtn = document.getElementById('add-btn');
+      input.value = 'New active task';
+      addBtn.click();
+
+      const afterAdd = visibleTexts();
+      assert(afterAdd.includes('New active task'), 'Newly added task appears when filter is "active"');
+      // Verify still sorted
+      const isSorted = afterAdd.every(
+        (t, i) => i === 0 || afterAdd[i - 1].toLowerCase() <= t.toLowerCase()
+      );
+      assert(isSorted, 'Sort A→Z maintained after adding a new task');
+
+      showSummary();
+    }
+
+    // Run after DOM + app script have loaded.
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', runAllTests);
+    } else {
+      runAllTests();
+    }
+  </script>
+
+  <!--
+  ═══════════════════════════════════════════════════════════════════════════
+  HOW TO RUN THESE TESTS
+  ═══════════════════════════════════════════════════════════════════════════
+
+  Because index.html keeps all JavaScript inline (no separate .js file), this
+  test page cannot import it directly.  Two options:
+
+  Option A — Serve locally (recommended):
+    python3 -m http.server 8080
+    Open http://localhost:8080/tests.html
+
+    Then add this line to index.html just before </body>:
+      <script src="index-script.js"></script>   ← see Option B
+
+  Option B — Extract logic to a shared file:
+    1. Copy the contents of the <script> block in index.html to index-script.js
+    2. Replace the inline <script> in index.html with:
+         <script src="index-script.js"></script>
+    3. Open tests.html directly in a browser.
+
+  Option C — Manual testing checklist (no setup required):
+    Open index.html, then verify each item below manually:
+    [ ] Sort A→Z button/option orders tasks alphabetically (case-insensitive)
+    [ ] Sort Z→A button/option reverses that order
+    [ ] Default/None sort restores insertion order
+    [ ] Filter "Completed" shows only checked-off tasks
+    [ ] Filter "Active" shows only incomplete tasks
+    [ ] Filter "All" shows every task
+    [ ] Combined sort + filter work together correctly
+    [ ] Adding/deleting a task respects the active sort and filter
+    [ ] Sort and filter controls appear in the UI
+  ═══════════════════════════════════════════════════════════════════════════
+  -->
+</body>
+</html>
