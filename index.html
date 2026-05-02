@@ -221,6 +221,46 @@
       color: #c00;
       text-decoration: underline;
     }
+
+    #controls-row {
+      display: flex;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+      flex-wrap: wrap;
+    }
+
+    .ctrl-group {
+      display: flex;
+      align-items: center;
+      gap: 0.25rem;
+    }
+
+    .ctrl-label {
+      font-size: 0.8rem;
+      color: var(--footer-color);
+      margin-right: 0.1rem;
+    }
+
+    .ctrl-btn {
+      background: none;
+      border: 1px solid var(--input-border);
+      color: var(--text);
+      font-size: 0.8rem;
+      border-radius: 4px;
+      padding: 0.2rem 0.5rem;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+
+    .ctrl-btn:hover {
+      border-color: var(--input-focus);
+    }
+
+    .ctrl-btn.active {
+      background: var(--btn-bg);
+      color: #fff;
+      border-color: var(--btn-bg);
+    }
   </style>
 </head>
 <body>
@@ -232,6 +272,20 @@
     <div id="input-row">
       <input id="task-input" type="text" placeholder="Add a task…" autocomplete="off">
       <button id="add-btn">Add</button>
+    </div>
+    <div id="controls-row">
+      <div class="ctrl-group">
+        <span class="ctrl-label">Sort:</span>
+        <button class="ctrl-btn active" data-sort="default">Default</button>
+        <button class="ctrl-btn" data-sort="az">A→Z</button>
+        <button class="ctrl-btn" data-sort="za">Z→A</button>
+      </div>
+      <div class="ctrl-group">
+        <span class="ctrl-label">Show:</span>
+        <button class="ctrl-btn active" data-filter="all">All</button>
+        <button class="ctrl-btn" data-filter="active">Active</button>
+        <button class="ctrl-btn" data-filter="completed">Done</button>
+      </div>
     </div>
     <ul id="task-list"></ul>
     <div id="footer">
@@ -265,34 +319,53 @@
     });
 
     let tasks = JSON.parse(localStorage.getItem('tasks') || '[]');
+    let sortMode = 'default';
+    let filterMode = 'all';
 
     function save() {
       localStorage.setItem('tasks', JSON.stringify(tasks));
     }
 
-    let dragSrcIndex = null;
+    function getViewTasks() {
+      let view = tasks.map((task, i) => ({ ...task, _idx: i }));
+      if (filterMode === 'active') view = view.filter(t => !t.done);
+      else if (filterMode === 'completed') view = view.filter(t => t.done);
+      if (sortMode === 'az') view.sort((a, b) => a.text.localeCompare(b.text));
+      else if (sortMode === 'za') view.sort((a, b) => b.text.localeCompare(a.text));
+      return view;
+    }
+
+    let dragSrcIdx = null;
 
     function render() {
+      const view = getViewTasks();
       list.innerHTML = '';
       const remaining = tasks.filter(t => !t.done).length;
       const completed = tasks.filter(t => t.done).length;
       taskCount.textContent = tasks.length === 0 ? '' : `${remaining} item${remaining !== 1 ? 's' : ''} left`;
       clearBtn.style.display = completed > 0 ? '' : 'none';
-      tasks.forEach((task, i) => {
+
+      const canDrag = sortMode === 'default';
+
+      view.forEach((task) => {
         const li = document.createElement('li');
-        li.draggable = true;
+        li.draggable = canDrag;
         if (task.done) li.classList.add('done-item');
 
         const handle = document.createElement('span');
         handle.className = 'drag-handle';
         handle.textContent = '⠿';
         handle.setAttribute('aria-hidden', 'true');
+        if (!canDrag) {
+          handle.style.opacity = '0.3';
+          handle.style.cursor = 'default';
+        }
 
         const span = document.createElement('span');
         span.className = 'task-text' + (task.done ? ' done' : '');
         span.textContent = task.text;
         span.addEventListener('click', () => {
-          tasks[i].done = !tasks[i].done;
+          tasks[task._idx].done = !tasks[task._idx].done;
           save();
           render();
         });
@@ -302,33 +375,36 @@
         del.textContent = '✕';
         del.setAttribute('aria-label', 'Delete task');
         del.addEventListener('click', () => {
-          tasks.splice(i, 1);
+          tasks.splice(task._idx, 1);
           save();
           render();
         });
 
-        li.addEventListener('dragstart', () => {
-          dragSrcIndex = i;
-          li.classList.add('dragging');
-        });
-        li.addEventListener('dragend', () => {
-          li.classList.remove('dragging');
-          list.querySelectorAll('li').forEach(el => el.classList.remove('drag-over'));
-        });
-        li.addEventListener('dragover', (e) => {
-          e.preventDefault();
-          list.querySelectorAll('li').forEach(el => el.classList.remove('drag-over'));
-          li.classList.add('drag-over');
-        });
-        li.addEventListener('drop', (e) => {
-          e.preventDefault();
-          if (dragSrcIndex === null || dragSrcIndex === i) return;
-          const moved = tasks.splice(dragSrcIndex, 1)[0];
-          tasks.splice(i, 0, moved);
-          dragSrcIndex = null;
-          save();
-          render();
-        });
+        if (canDrag) {
+          li.addEventListener('dragstart', () => {
+            dragSrcIdx = task._idx;
+            li.classList.add('dragging');
+          });
+          li.addEventListener('dragend', () => {
+            li.classList.remove('dragging');
+            list.querySelectorAll('li').forEach(el => el.classList.remove('drag-over'));
+          });
+          li.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            list.querySelectorAll('li').forEach(el => el.classList.remove('drag-over'));
+            li.classList.add('drag-over');
+          });
+          li.addEventListener('drop', (e) => {
+            e.preventDefault();
+            if (dragSrcIdx === null || dragSrcIdx === task._idx) return;
+            const moved = tasks.splice(dragSrcIdx, 1)[0];
+            const targetIdx = task._idx > dragSrcIdx ? task._idx - 1 : task._idx;
+            tasks.splice(targetIdx, 0, moved);
+            dragSrcIdx = null;
+            save();
+            render();
+          });
+        }
 
         li.appendChild(handle);
         li.appendChild(span);
@@ -355,6 +431,22 @@
       tasks = tasks.filter(t => !t.done);
       save();
       render();
+    });
+
+    document.querySelectorAll('[data-sort]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        sortMode = btn.dataset.sort;
+        document.querySelectorAll('[data-sort]').forEach(b => b.classList.toggle('active', b === btn));
+        render();
+      });
+    });
+
+    document.querySelectorAll('[data-filter]').forEach(btn => {
+      btn.addEventListener('click', () => {
+        filterMode = btn.dataset.filter;
+        document.querySelectorAll('[data-filter]').forEach(b => b.classList.toggle('active', b === btn));
+        render();
+      });
     });
 
     render();
