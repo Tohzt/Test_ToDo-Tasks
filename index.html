@@ -208,7 +208,7 @@
       min-height: 1.5rem;
     }
 
-    #clear-btn {
+    #clear-btn, #download-btn {
       background: none;
       border: none;
       color: var(--footer-color);
@@ -219,6 +219,11 @@
 
     #clear-btn:hover {
       color: #c00;
+      text-decoration: underline;
+    }
+
+    #download-btn:hover {
+      color: var(--text);
       text-decoration: underline;
     }
 
@@ -290,7 +295,10 @@
     <ul id="task-list"></ul>
     <div id="footer">
       <span id="task-count"></span>
-      <button id="clear-btn" style="display:none">Clear completed</button>
+      <div style="display:flex;gap:0.75rem;align-items:center;">
+        <button id="download-btn">Download JSON</button>
+        <button id="clear-btn" style="display:none">Clear completed</button>
+      </div>
     </div>
   </div>
 
@@ -300,6 +308,7 @@
     const list = document.getElementById('task-list');
     const taskCount = document.getElementById('task-count');
     const clearBtn = document.getElementById('clear-btn');
+    const downloadBtn = document.getElementById('download-btn');
     const themeBtn = document.getElementById('theme-btn');
 
     const isDark = () => document.body.classList.contains('dark');
@@ -431,6 +440,14 @@
       tasks = tasks.filter(t => !t.done);
       save();
       render();
+    });
+
+    downloadBtn.addEventListener('click', () => {
+      const view = getViewTasks().map(({ text, done }) => ({ text, done }));
+      const a = document.createElement('a');
+      a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(view, null, 2));
+      a.download = 'tasks.json';
+      a.click();
     });
 
     document.querySelectorAll('[data-sort]').forEach(btn => {
