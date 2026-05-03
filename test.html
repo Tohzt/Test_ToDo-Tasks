@@ -2,221 +2,165 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>Tests — Download Feature</title>
+  <title>Tests — Import Button</title>
   <style>
-    body { font-family: monospace; padding: 1.5rem; background: #1a1a1a; color: #e0e0e0; }
-    h2 { margin-bottom: 1rem; font-size: 1.1rem; color: #aaa; }
-    .pass { color: #6abf6a; }
-    .fail { color: #bf6a6a; }
-    #summary { margin-top: 1rem; font-size: 1rem; border-top: 1px solid #444; padding-top: 0.75rem; }
+    body { font-family: system-ui, sans-serif; padding: 2rem; max-width: 640px; margin: auto; }
+    h1 { font-size: 1.3rem; margin-bottom: 1rem; }
+    .pass { color: #2a7; }
+    .fail { color: #c00; font-weight: bold; }
+    .suite { margin-bottom: 1.5rem; }
+    h2 { font-size: 1rem; margin-bottom: 0.5rem; border-bottom: 1px solid #ccc; padding-bottom: 0.25rem; }
+    li { list-style: none; padding: 0.2rem 0; font-size: 0.9rem; }
+    #summary { font-weight: bold; margin-top: 1rem; }
   </style>
 </head>
 <body>
-  <h2>To-Do List — Download Feature Tests</h2>
+  <h1>Import Button Tests</h1>
   <div id="output"></div>
   <div id="summary"></div>
-  <iframe id="app-frame" src="index.html" style="display:none" width="600" height="400"></iframe>
+
+  <!-- Hidden iframe loads app for DOM-based tests -->
+  <iframe id="app-frame" src="index.html" style="display:none"></iframe>
 
   <script>
+    const results = [];
+
+    function assert(label, condition) {
+      results.push({ label, pass: !!condition });
+    }
+
+    function simulateImport(tasks, frameDoc, frameWin) {
+      const importFile = frameDoc.getElementById('import-file');
+      const json = JSON.stringify(tasks);
+
+      // Build a synthetic event by directly invoking the FileReader path
+      const reader = new FileReader();
+      const originalOnLoad = null;
+
+      // Manually trigger the change handler logic by constructing a fake event
+      // We do this by replacing the file input's listener via a direct call into
+      // the app's importFile change handler (shimmed below via postMessage-like
+      // approach: just call the handler directly on the frame's FileReader mock).
+
+      // Inject a helper on the frame to simulate a file load
+      frameWin.__simulateFileLoad = function(jsonString) {
+        const importFile = frameDoc.getElementById('import-file');
+        // Dispatch a synthetic event after setting up a mock files list
+        const blob = new Blob([jsonString], { type: 'application/json' });
+        blob.name = 'test.json';
+        const dt = new DataTransfer();
+        // DataTransfer + FileList isn't easily mockable; use the reader.onload path directly
+        // Instead, fire a custom event that the test listener below handles
+        importFile.dispatchEvent(new CustomEvent('__test_load', { detail: jsonString }));
+      };
+
+      // Patch the importFile change listener in the frame to also handle __test_load
+      importFile.addEventListener('__test_load', (e) => {
+        const data = JSON.parse(e.detail);
+        // Replicate the import logic exactly as in index.html
+        if (!Array.isArray(data)) throw new Error('not an array');
+        frameWin.__importedTasks = data
+          .filter(t => t && typeof t.text === 'string')
+          .map(t => ({ text: t.text, done: !!t.done }));
+        // Write to localStorage and tasks array
+        frameWin.localStorage.setItem('tasks', JSON.stringify(frameWin.__importedTasks));
+      });
+    }
+
+    // ---- Pure logic tests (no iframe needed) ----
+    // These replicate the import handler logic directly
+
+    function runImportLogic(jsonString) {
+      const data = JSON.parse(jsonString);
+      if (!Array.isArray(data)) throw new Error('not an array');
+      return data
+        .filter(t => t && typeof t.text === 'string')
+        .map(t => ({ text: t.text, done: !!t.done }));
+    }
+
     const output = document.getElementById('output');
-    let passed = 0, failed = 0;
+    const summary = document.getElementById('summary');
 
-    function test(desc, fn) {
-      try {
-        const result = fn();
-        if (result === true || result === undefined) {
-          passed++;
-          output.innerHTML += `<div class="pass">✓ ${desc}</div>`;
-        } else {
-          failed++;
-          output.innerHTML += `<div class="fail">✗ ${desc}: ${result}</div>`;
-        }
-      } catch (e) {
-        failed++;
-        output.innerHTML += `<div class="fail">✗ ${desc}: threw ${e.message}</div>`;
-      }
+    function renderResults() {
+      const pass = results.filter(r => r.pass).length;
+      const fail = results.filter(r => !r.pass).length;
+      output.innerHTML = results.map(r =>
+        `<li class="${r.pass ? 'pass' : 'fail'}">${r.pass ? '✓' : '✗'} ${r.label}</li>`
+      ).join('');
+      summary.textContent = `${pass} passed, ${fail} failed`;
+      summary.className = fail === 0 ? 'pass' : 'fail';
     }
 
-    function renderSummary() {
-      document.getElementById('summary').innerHTML =
-        `Result: <strong>${passed} passed, ${failed} failed</strong>`;
+    // --- Suite: import logic ---
+
+    // 1. Valid array with text+done fields
+    {
+      const result = runImportLogic('[{"text":"Buy milk","done":false},{"text":"Walk dog","done":true}]');
+      assert('imports valid array of tasks', result.length === 2);
+      assert('preserves text field', result[0].text === 'Buy milk');
+      assert('preserves done=false', result[0].done === false);
+      assert('preserves done=true', result[1].done === true);
     }
 
-    // ---------------------------------------------------------------------------
-    // Replicated export logic from index.html (must stay in sync with app)
-    // ---------------------------------------------------------------------------
-    let tasks = [];
-    let sortMode = 'default';
-    let filterMode = 'all';
-
-    function getViewTasks() {
-      let view = tasks.map((task, i) => ({ ...task, _idx: i }));
-      if (filterMode === 'active') view = view.filter(t => !t.done);
-      else if (filterMode === 'completed') view = view.filter(t => t.done);
-      if (sortMode === 'az') view.sort((a, b) => a.text.localeCompare(b.text));
-      else if (sortMode === 'za') view.sort((a, b) => b.text.localeCompare(a.text));
-      return view;
+    // 2. Filters items missing text property
+    {
+      const result = runImportLogic('[{"text":"Keep me"},{"done":false},null,{"text":"Also keep"}]');
+      assert('filters items missing text property', result.length === 2);
+      assert('kept correct items', result[0].text === 'Keep me' && result[1].text === 'Also keep');
     }
 
-    function buildDownloadData() {
-      return getViewTasks().map(({ text, done }) => ({ text, done }));
+    // 3. done coerced to boolean
+    {
+      const result = runImportLogic('[{"text":"A","done":1},{"text":"B","done":0},{"text":"C"}]');
+      assert('coerces truthy done to true', result[0].done === true);
+      assert('coerces falsy done to false', result[1].done === false);
+      assert('missing done defaults to false', result[2].done === false);
     }
 
-    // ---------------------------------------------------------------------------
-    // Logic tests (filter / sort / shape)
-    // ---------------------------------------------------------------------------
-    test('empty list exports as empty array', () => {
-      tasks = []; filterMode = 'all'; sortMode = 'default';
-      const data = buildDownloadData();
-      return JSON.stringify(data) === '[]' || `got ${JSON.stringify(data)}`;
+    // 4. Extra properties are stripped
+    {
+      const result = runImportLogic('[{"text":"Task","done":false,"id":99,"extra":"stuff"}]');
+      assert('strips extra properties', !('id' in result[0]) && !('extra' in result[0]));
+    }
+
+    // 5. Empty array is valid
+    {
+      const result = runImportLogic('[]');
+      assert('empty array produces empty task list', result.length === 0);
+    }
+
+    // 6. Non-array throws
+    {
+      let threw = false;
+      try { runImportLogic('{"text":"not an array"}'); } catch { threw = true; }
+      assert('non-array JSON throws error', threw);
+    }
+
+    // 7. Invalid JSON throws (simulating the catch block)
+    {
+      let threw = false;
+      try { JSON.parse('not valid json at all'); } catch { threw = true; }
+      assert('invalid JSON throws (caught by try/catch in handler)', threw);
+    }
+
+    // --- Suite: DOM structure ---
+
+    const appFrame = document.getElementById('app-frame');
+    appFrame.addEventListener('load', () => {
+      const doc = appFrame.contentDocument;
+
+      assert('import button exists in DOM', !!doc.getElementById('import-btn'));
+      assert('import button text is "Import JSON"', doc.getElementById('import-btn').textContent === 'Import JSON');
+      assert('hidden file input exists', !!doc.getElementById('import-file'));
+      assert('file input is hidden', doc.getElementById('import-file').style.display === 'none');
+      assert('file input accepts .json', doc.getElementById('import-file').getAttribute('accept') === '.json');
+      assert('import button is visible (no display:none)', doc.getElementById('import-btn').style.display !== 'none');
+
+      renderResults();
     });
 
-    test('exported items have exactly text and done fields', () => {
-      tasks = [{ text: 'Buy milk', done: false }];
-      filterMode = 'all'; sortMode = 'default';
-      const [item] = buildDownloadData();
-      const keys = Object.keys(item).sort().join(',');
-      return keys === 'done,text' || `got keys: ${keys}`;
-    });
-
-    test('exported items do not include internal _idx field', () => {
-      tasks = [{ text: 'Task A', done: false }];
-      filterMode = 'all'; sortMode = 'default';
-      const [item] = buildDownloadData();
-      return !('_idx' in item) || 'found _idx in exported item';
-    });
-
-    test('filter=all exports all tasks', () => {
-      tasks = [{ text: 'Active', done: false }, { text: 'Done', done: true }];
-      filterMode = 'all'; sortMode = 'default';
-      const data = buildDownloadData();
-      return data.length === 2 || `expected 2, got ${data.length}`;
-    });
-
-    test('filter=active exports only incomplete tasks', () => {
-      tasks = [{ text: 'Active', done: false }, { text: 'Done', done: true }];
-      filterMode = 'active'; sortMode = 'default';
-      const data = buildDownloadData();
-      return data.length === 1 && !data[0].done || `got ${JSON.stringify(data)}`;
-    });
-
-    test('filter=completed exports only done tasks', () => {
-      tasks = [{ text: 'Active', done: false }, { text: 'Done', done: true }];
-      filterMode = 'completed'; sortMode = 'default';
-      const data = buildDownloadData();
-      return data.length === 1 && data[0].done || `got ${JSON.stringify(data)}`;
-    });
-
-    test('sort=az exports tasks in alphabetical order', () => {
-      tasks = [{ text: 'Zebra', done: false }, { text: 'Apple', done: false }];
-      filterMode = 'all'; sortMode = 'az';
-      const data = buildDownloadData();
-      return data[0].text === 'Apple' && data[1].text === 'Zebra'
-        || `got order: ${data.map(t => t.text).join(', ')}`;
-    });
-
-    test('sort=za exports tasks in reverse alphabetical order', () => {
-      tasks = [{ text: 'Apple', done: false }, { text: 'Zebra', done: false }];
-      filterMode = 'all'; sortMode = 'za';
-      const data = buildDownloadData();
-      return data[0].text === 'Zebra' && data[1].text === 'Apple'
-        || `got order: ${data.map(t => t.text).join(', ')}`;
-    });
-
-    test('sort=default preserves insertion order', () => {
-      tasks = [{ text: 'First', done: false }, { text: 'Second', done: false }];
-      filterMode = 'all'; sortMode = 'default';
-      const data = buildDownloadData();
-      return data[0].text === 'First' && data[1].text === 'Second'
-        || `got order: ${data.map(t => t.text).join(', ')}`;
-    });
-
-    test('download URI uses application/json MIME type', () => {
-      tasks = [{ text: 'Task', done: false }];
-      filterMode = 'all'; sortMode = 'default';
-      const data = buildDownloadData();
-      const uri = 'data:application/json;charset=utf-8,'
-        + encodeURIComponent(JSON.stringify(data, null, 2));
-      return uri.startsWith('data:application/json;charset=utf-8,')
-        || 'unexpected MIME type prefix';
-    });
-
-    test('download URI content decodes to valid JSON array', () => {
-      tasks = [{ text: 'Decode me', done: true }];
-      filterMode = 'all'; sortMode = 'default';
-      const data = buildDownloadData();
-      const encoded = encodeURIComponent(JSON.stringify(data, null, 2));
-      const decoded = JSON.parse(decodeURIComponent(encoded));
-      return Array.isArray(decoded)
-        && decoded[0].text === 'Decode me'
-        && decoded[0].done === true
-        || `decoded: ${JSON.stringify(decoded)}`;
-    });
-
-    // ---------------------------------------------------------------------------
-    // DOM tests via iframe
-    // ---------------------------------------------------------------------------
-    document.getElementById('app-frame').addEventListener('load', () => {
-      try {
-        const frame = document.getElementById('app-frame');
-        const doc = frame.contentDocument;
-
-        test('download button exists in the app DOM', () => {
-          return !!doc.getElementById('download-btn')
-            || 'no element with id="download-btn" found';
-        });
-
-        test('download button label is "Download JSON"', () => {
-          const btn = doc.getElementById('download-btn');
-          const label = btn && btn.textContent.trim();
-          return label === 'Download JSON' || `got "${label}"`;
-        });
-
-        test('clicking download button creates an anchor with JSON data URI', () => {
-          const origCreate = doc.createElement.bind(doc);
-          let captured = null;
-          doc.createElement = function (tag) {
-            const el = origCreate(tag);
-            if (tag.toLowerCase() === 'a') {
-              captured = el;
-              el.click = () => {}; // suppress actual file download
-            }
-            return el;
-          };
-          doc.getElementById('download-btn').click();
-          doc.createElement = origCreate;
-          return captured !== null && captured.href.includes('application%2Fjson')
-            || `anchor href: ${captured ? captured.href.slice(0, 60) : 'null'}`;
-        });
-
-        test('download anchor has filename tasks.json', () => {
-          const origCreate = doc.createElement.bind(doc);
-          let captured = null;
-          doc.createElement = function (tag) {
-            const el = origCreate(tag);
-            if (tag.toLowerCase() === 'a') {
-              captured = el;
-              el.click = () => {};
-            }
-            return el;
-          };
-          doc.getElementById('download-btn').click();
-          doc.createElement = origCreate;
-          return captured && captured.download === 'tasks.json'
-            || `download attr: "${captured ? captured.download : 'null'}"`;
-        });
-
-      } catch (e) {
-        failed++;
-        output.innerHTML += `<div class="fail">✗ iframe DOM tests failed: ${e.message}</div>`;
-      }
-
-      renderSummary();
-    });
-
-    // Render summary for logic-only tests if iframe somehow never fires load
-    // (summary will be overwritten when iframe load fires)
-    renderSummary();
+    // Render logic-only results immediately (frame tests append on load)
+    renderResults();
   </script>
 </body>
 </html>

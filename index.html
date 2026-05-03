@@ -208,7 +208,7 @@
       min-height: 1.5rem;
     }
 
-    #clear-btn, #download-btn {
+    #clear-btn, #download-btn, #import-btn {
       background: none;
       border: none;
       color: var(--footer-color);
@@ -222,7 +222,7 @@
       text-decoration: underline;
     }
 
-    #download-btn:hover {
+    #download-btn:hover, #import-btn:hover {
       color: var(--text);
       text-decoration: underline;
     }
@@ -296,9 +296,11 @@
     <div id="footer">
       <span id="task-count"></span>
       <div style="display:flex;gap:0.75rem;align-items:center;">
+        <button id="import-btn">Import JSON</button>
         <button id="download-btn">Download JSON</button>
         <button id="clear-btn" style="display:none">Clear completed</button>
       </div>
+      <input id="import-file" type="file" accept=".json" style="display:none">
     </div>
   </div>
 
@@ -309,6 +311,8 @@
     const taskCount = document.getElementById('task-count');
     const clearBtn = document.getElementById('clear-btn');
     const downloadBtn = document.getElementById('download-btn');
+    const importBtn = document.getElementById('import-btn');
+    const importFile = document.getElementById('import-file');
     const themeBtn = document.getElementById('theme-btn');
 
     const isDark = () => document.body.classList.contains('dark');
@@ -448,6 +452,31 @@
       a.href = 'data:application/json;charset=utf-8,' + encodeURIComponent(JSON.stringify(view, null, 2));
       a.download = 'tasks.json';
       a.click();
+    });
+
+    importBtn.addEventListener('click', () => {
+      importFile.value = '';
+      importFile.click();
+    });
+
+    importFile.addEventListener('change', () => {
+      const file = importFile.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        try {
+          const data = JSON.parse(e.target.result);
+          if (!Array.isArray(data)) throw new Error('not an array');
+          tasks = data
+            .filter(t => t && typeof t.text === 'string')
+            .map(t => ({ text: t.text, done: !!t.done }));
+          save();
+          render();
+        } catch {
+          alert('Invalid JSON file. Expected an array of task objects.');
+        }
+      };
+      reader.readAsText(file);
     });
 
     document.querySelectorAll('[data-sort]').forEach(btn => {
